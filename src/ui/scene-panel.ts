@@ -1,0 +1,153 @@
+import { Container, ContainerArgs, Element, Label } from '@playcanvas/pcui';
+
+import { Events } from '../events';
+import { localize } from './localization';
+import { SplatList } from './splat-list';
+import { BackgroundList } from './background-list';
+import sceneImportSvg from './svg/import.svg';
+import sceneNewSvg from './svg/new.svg';
+import { Tooltips } from './tooltips';
+import { Transform } from './transform';
+
+const createSvg = (svgString: string) => {
+    const decodedStr = decodeURIComponent(svgString.substring('data:image/svg+xml,'.length));
+    return new DOMParser().parseFromString(decodedStr, 'image/svg+xml').documentElement;
+};
+
+class ScenePanel extends Container {
+    constructor(events: Events, tooltips: Tooltips, args: ContainerArgs & { isMobile?: boolean } = {}) {
+        const isMobile = args.isMobile || false;
+        // Extract isMobile and create clean ContainerArgs without it
+        const { isMobile: _, ...containerArgs } = args;
+        const finalArgs: ContainerArgs = {
+            ...containerArgs,
+            id: 'scene-panel',
+            class: 'panel'
+        };
+
+        super(finalArgs);
+
+        // stop pointer events bubbling
+        ['pointerdown', 'pointerup', 'pointermove', 'wheel', 'dblclick'].forEach((eventName) => {
+            this.dom.addEventListener(eventName, (event: Event) => event.stopPropagation());
+        });
+
+        const sceneHeader = new Container({
+            class: 'panel-header'
+        });
+
+        const sceneIcon = new Label({
+            text: '\uE344',
+            class: 'panel-header-icon'
+        });
+
+        const sceneLabel = new Label({
+            text: localize('panel.scene-manager'),
+            class: 'panel-header-label'
+        });
+
+        const sceneImport = new Container({
+            class: 'panel-header-button'
+        });
+        sceneImport.dom.appendChild(createSvg(sceneImportSvg));
+
+        const sceneNew = new Container({
+            class: 'panel-header-button'
+        });
+        sceneNew.dom.appendChild(createSvg(sceneNewSvg));
+
+        sceneHeader.append(sceneIcon);
+        sceneHeader.append(sceneLabel);
+        sceneHeader.append(sceneImport);
+        sceneHeader.append(sceneNew);
+
+        sceneImport.on('click', async () => {
+            await events.invoke('scene.import');
+        });
+
+        sceneNew.on('click', () => {
+            events.invoke('doc.new');
+        });
+
+        tooltips.register(sceneImport, 'Import Scene', 'top');
+        tooltips.register(sceneNew, 'New Scene', 'top');
+
+        const splatList = new SplatList(events);
+
+        const splatListContainer = new Container({
+            class: 'splat-list-container'
+        });
+        splatListContainer.append(splatList);
+
+        const transformHeader = new Container({
+            class: 'panel-header'
+        });
+
+        const transformIcon = new Label({
+            text: '\uE111',
+            class: 'panel-header-icon'
+        });
+
+        const transformLabel = new Label({
+            text: localize('panel.scene-manager.transform'),
+            class: 'panel-header-label'
+        });
+
+        transformHeader.append(transformIcon);
+        transformHeader.append(transformLabel);
+
+        this.append(sceneHeader);
+        this.append(splatListContainer);
+        
+        // Only show transform section on desktop
+        if (!isMobile) {
+            this.append(transformHeader);
+            this.append(new Transform(events));
+        }
+
+        // Background section (show on both desktop and mobile)
+        const backgroundHeader = new Container({
+            class: 'panel-header'
+        });
+
+        const backgroundIcon = new Label({
+            text: '\uE344',
+            class: 'panel-header-icon'
+        });
+
+        const backgroundLabel = new Label({
+            text: localize('panel.scene-manager.background'),
+            class: 'panel-header-label'
+        });
+
+        const backgroundImport = new Container({
+            class: 'panel-header-button'
+        });
+        backgroundImport.dom.appendChild(createSvg(sceneImportSvg));
+
+        backgroundHeader.append(backgroundIcon);
+        backgroundHeader.append(backgroundLabel);
+        backgroundHeader.append(backgroundImport);
+
+        backgroundImport.on('click', async () => {
+            await events.invoke('background.import');
+        });
+
+        tooltips.register(backgroundImport, localize('panel.scene-manager.background.import'), 'top');
+
+        const backgroundList = new BackgroundList(events);
+        const backgroundListContainer = new Container({
+            class: 'background-list-container'
+        });
+        backgroundListContainer.append(backgroundList);
+
+        this.append(backgroundHeader);
+        this.append(backgroundListContainer);
+        this.append(new Element({
+            class: 'panel-header',
+            height: 20
+        }));
+    }
+}
+
+export { ScenePanel };

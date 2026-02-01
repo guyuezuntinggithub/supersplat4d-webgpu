@@ -1,0 +1,876 @@
+import { Color, Mat4, path, Texture, Vec3, Vec4 } from 'playcanvas';
+
+import { EditHistory } from './edit-history';
+import { SelectAllOp, SelectNoneOp, SelectInvertOp, SelectOp, HideSelectionOp, UnhideAllOp, DeleteSelectionOp, ResetOp, MultiOp, AddSplatOp } from './edit-ops';
+import { Events } from './events';
+import { Scene } from './scene';
+import { BufferWriter } from './serialize/writer';
+import { Splat } from './splat';
+import { serializePly } from './splat-serialize';
+
+const removeExtension = (filename: string) => {
+    return filename.substring(0, filename.length - path.getExtension(filename).length);
+};
+
+// register for editor and scene events
+const registerEditorEvents = (events: Events, editHistory: EditHistory, scene: Scene) => {
+    const vec = new Vec3();
+    const vec2 = new Vec3();
+    const vec4 = new Vec4();
+    const mat = new Mat4();
+    const SH_C0 = 0.28209479177387814;
+
+    // Frame-only selection mode (only select visible splats at current frame for dynamic gaussians)
+    let frameOnlyMode = false;
+    
+    events.function('selection.frameOnly', () => frameOnlyMode);
+    events.on('selection.toggleFrameOnly', () => {
+        frameOnlyMode = !frameOnlyMode;
+        events.fire('selection.frameOnly', frameOnlyMode);
+        scene.forceRender = true;
+    });
+
+    /**
+     * Check if a splat is visible at current time (for dynamic gaussians)
+     * Returns true for static gaussians or if frameOnlyMode is disabled
+     */
+    const isSplatVisibleAtCurrentTime = (splat: Splat, index: number): boolean => {
+        if (!frameOnlyMode || !splat.isDynamic || !splat.dynManifest) {
+            return true; // Always visible if not in frame-only mode or not dynamic
+        }
+
+        const splatData = splat.splatData;
+        const trbfCenter = splatData.getProp('trbf_center') as Float32Array;
+        const trbfScale = splatData.getProp('trbf_scale') as Float32Array;
+        const opacity = splatData.getProp('opacity') as Float32Array;
+
+        if (!trbfCenter || !trbfScale || !opacity) {
+            return true; // Missing dynamic properties, assume visible
+        }
+
+        // Bounds check
+        if (index < 0 || index >= splatData.numSplats) {
+            return false; // Invalid index
+        }
+
+        // Get current time from timeline (same logic as onUpdate)
+        const currentFrame = (events.invoke('timeline.frame') ?? 0) as number;
+        const totalFrames = Math.ceil(splat.dynManifest.duration * splat.dynManifest.fps);
+        const frame = currentFrame % totalFrames;
+        const currentTime = splat.dynManifest.start + (frame / splat.dynManifest.fps);
+
+        const tc = trbfCenter[index];
+        const ts = Math.max(trbfScale[index], 1e-6); // Already exp-converted
+        const opLogit = opacity[index];
+
+        // Compute sigmoid of opacity
+        const baseOp = 1 / (1 + Math.exp(-Math.max(-20, Math.min(20, opLogit))));
+
+        // Calculate dynamic opacity
+        const dt = (currentTime - tc) / ts;
+        const trbfGauss = Math.exp(-dt * dt);
+        const dynOpacity = baseOp * trbfGauss;
+
+        // Use selection threshold (0.05) - stricter than rendering (0.005) to avoid selecting adjacent frames
+        return dynOpacity > 0.05;
+    };
+
+    const decodeColorChannel = (value: number) => {
+        return Math.min(1, Math.max(0, 0.5 + value * SH_C0));
+    };
+
+    // get the list of selected splats (currently limited to just a single one)
+    const selectedSplats = () => {
+        const selected = events.invoke('selection') as Splat;
+        return selected?.visible ? [selected] : [];
+    };
+
+    let lastExportCursor = 0;
+
+    // add unsaved changes warning message.
+    window.addEventListener('beforeunload', (e) => {
+        if (!events.invoke('scene.dirty')) {
+            // if the undo cursor matches last export, then we have no unsaved changes
+            return undefined;
+        }
+
+        const msg = 'You have unsaved changes. Are you sure you want to leave?';
+        e.returnValue = msg;
+        return msg;
+    });
+
+    events.function('targetSize', () => {
+        return scene.targetSize;
+    });
+
+    events.on('scene.clear', () => {
+        scene.clear();
+        editHistory.clear();
+        lastExportCursor = 0;
+    });
+
+    events.function('scene.dirty', () => {
+        return editHistory.cursor !== lastExportCursor;
+    });
+
+    events.on('doc.saved', () => {
+        lastExportCursor = editHistory.cursor;
+    });
+
+    events.on('camera.mode', () => {
+        scene.forceRender = true;
+    });
+
+    events.on('camera.overlay', () => {
+        scene.forceRender = true;
+    });
+
+    events.on('camera.splatSize', () => {
+        scene.forceRender = true;
+    });
+
+    events.on('view.outlineSelection', () => {
+        scene.forceRender = true;
+    });
+
+    events.on('view.bands', (bands: number) => {
+        scene.forceRender = true;
+    });
+
+    events.on('camera.bound', () => {
+        scene.forceRender = true;
+    });
+
+    events.on('camera.highPrecision', () => {
+        scene.forceRender = true;
+    });
+
+    events.on('selection.changed', () => {
+        scene.forceRender = true;
+    });
+
+    events.on('tool.coordSpace', () => {
+        scene.forceRender = true;
+    });
+
+    // grid.visible
+
+    const setGridVisible = (visible: boolean) => {
+        if (visible !== scene.grid.visible) {
+            scene.grid.visible = visible;
+            events.fire('grid.visible', visible);
+        }
+    };
+
+    events.function('grid.visible', () => {
+        return scene.grid.visible;
+    });
+
+    events.on('grid.setVisible', (visible: boolean) => {
+        setGridVisible(visible);
+    });
+
+    events.on('grid.toggleVisible', () => {
+        setGridVisible(!scene.grid.visible);
+    });
+
+    setGridVisible(scene.config.show.grid);
+
+    // camera.fov
+
+    const setCameraFov = (fov: number) => {
+        if (fov !== scene.camera.fov) {
+            scene.camera.fov = fov;
+            events.fire('camera.fov', scene.camera.fov);
+        }
+    };
+
+    events.function('camera.fov', () => {
+        return scene.camera.fov;
+    });
+
+    events.on('camera.setFov', (fov: number) => {
+        setCameraFov(fov);
+    });
+
+    // camera.tonemapping
+
+    events.function('camera.tonemapping', () => {
+        return scene.camera.tonemapping;
+    });
+
+    events.on('camera.setTonemapping', (value: string) => {
+        scene.camera.tonemapping = value;
+    });
+
+    // camera.bound
+
+    let bound = scene.config.show.bound;
+
+    const setBoundVisible = (visible: boolean) => {
+        if (visible !== bound) {
+            bound = visible;
+            events.fire('camera.bound', bound);
+        }
+    };
+
+    events.function('camera.bound', () => {
+        return bound;
+    });
+
+    events.on('camera.setBound', (value: boolean) => {
+        setBoundVisible(value);
+    });
+
+    events.on('camera.toggleBound', () => {
+        setBoundVisible(!events.invoke('camera.bound'));
+    });
+
+    // camera.highPrecision
+
+    let highPrecision = scene.config.camera.highPrecision;
+
+    const sethighPrecision = (enabled: boolean) => {
+        if (enabled !== highPrecision) {
+            highPrecision = enabled;
+            events.fire('camera.highPrecision', highPrecision);
+        }
+    };
+
+    events.function('camera.highPrecision', () => {
+        return highPrecision;
+    });
+
+    events.on('camera.sethighPrecision', (value: boolean) => {
+        sethighPrecision(value);
+    });
+
+    // camera.focus
+
+    events.on('camera.focus', () => {
+        const splat = selectedSplats()[0];
+        if (splat) {
+
+            const bound = splat.numSelected > 0 ? splat.selectionBound : splat.localBound;
+            vec.copy(bound.center);
+
+            const worldTransform = splat.worldTransform;
+            worldTransform.transformPoint(vec, vec);
+            worldTransform.getScale(vec2);
+
+            scene.camera.focus({
+                focalPoint: vec,
+                radius: bound.halfExtents.length() * vec2.x,
+                speed: 1
+            });
+        }
+    });
+
+    events.on('camera.reset', () => {
+        const { initialAzim, initialElev, initialZoom } = scene.config.controls;
+        const x = Math.sin(initialAzim * Math.PI / 180) * Math.cos(initialElev * Math.PI / 180);
+        const y = -Math.sin(initialElev * Math.PI / 180);
+        const z = Math.cos(initialAzim * Math.PI / 180) * Math.cos(initialElev * Math.PI / 180);
+        const zoom = initialZoom;
+
+        scene.camera.setPose(new Vec3(x * zoom, y * zoom, z * zoom), new Vec3(0, 0, 0));
+    });
+
+    // handle camera align events
+    events.on('camera.align', (axis: string) => {
+        switch (axis) {
+            case 'px': scene.camera.setAzimElev(90, 0); break;
+            case 'py': scene.camera.setAzimElev(0, -90); break;
+            case 'pz': scene.camera.setAzimElev(0, 0); break;
+            case 'nx': scene.camera.setAzimElev(270, 0); break;
+            case 'ny': scene.camera.setAzimElev(0, 90); break;
+            case 'nz': scene.camera.setAzimElev(180, 0); break;
+        }
+
+        // switch to ortho mode
+        scene.camera.ortho = true;
+    });
+
+    // returns true if the selected splat has selected gaussians
+    events.function('selection.splats', () => {
+        const splat = events.invoke('selection') as Splat;
+        return splat?.numSelected > 0;
+    });
+
+    events.on('select.all', () => {
+        selectedSplats().forEach((splat) => {
+            events.fire('edit.add', new SelectAllOp(splat));
+        });
+    });
+
+    events.on('select.none', () => {
+        selectedSplats().forEach((splat) => {
+            events.fire('edit.add', new SelectNoneOp(splat));
+        });
+    });
+
+    events.on('select.invert', () => {
+        selectedSplats().forEach((splat) => {
+            events.fire('edit.add', new SelectInvertOp(splat));
+        });
+    });
+
+    events.on('select.pred', (op, pred: (i: number) => boolean) => {
+        selectedSplats().forEach((splat) => {
+            // Combine predicate with visibility check if frame-only mode is enabled
+            const filter = (i: number) => {
+                if (!pred(i)) {
+                    return false;
+                }
+                // Filter by visibility if frame-only mode is enabled
+                return isSplatVisibleAtCurrentTime(splat, i);
+            };
+            events.fire('edit.add', new SelectOp(splat, op, filter));
+        });
+    });
+
+    const intersectCenters = (splat: Splat, op: 'add'|'remove'|'set', options: any) => {
+        const data = scene.dataProcessor.intersect(options, splat);
+        const filter = (i: number) => {
+            if (data[i] !== 255) {
+                return false;
+            }
+            // Filter by visibility if frame-only mode is enabled
+            return isSplatVisibleAtCurrentTime(splat, i);
+        };
+        events.fire('edit.add', new SelectOp(splat, op, filter));
+    };
+
+    events.on('select.bySphere', (op: 'add'|'remove'|'set', sphere: number[]) => {
+        selectedSplats().forEach((splat) => {
+            intersectCenters(splat, op, {
+                sphere: { x: sphere[0], y: sphere[1], z: sphere[2], radius: sphere[3] }
+            });
+        });
+    });
+
+    events.on('select.byBox', (op: 'add'|'remove'|'set', box: number[]) => {
+        selectedSplats().forEach((splat) => {
+            intersectCenters(splat, op, {
+                box: { x: box[0], y: box[1], z: box[2], lenx: box[3], leny: box[4], lenz: box[5] }
+            });
+        });
+    });
+
+    events.on('select.rect', (op: 'add'|'remove'|'set', rect: any) => {
+        const mode = events.invoke('camera.mode');
+
+        selectedSplats().forEach((splat) => {
+            if (mode === 'centers') {
+                intersectCenters(splat, op, {
+                    rect: { x1: rect.start.x, y1: rect.start.y, x2: rect.end.x, y2: rect.end.y }
+                });
+            } else if (mode === 'rings') {
+                const { width, height } = scene.targetSize;
+
+                scene.camera.pickPrep(splat, op);
+                const pick = scene.camera.pickRect(
+                    Math.floor(rect.start.x * width),
+                    Math.floor(rect.start.y * height),
+                    Math.floor((rect.end.x - rect.start.x) * width),
+                    Math.floor((rect.end.y - rect.start.y) * height)
+                );
+
+                const selected = new Set<number>(pick);
+                const filter = (i: number) => {
+                    if (!selected.has(i)) {
+                        return false;
+                    }
+                    // Filter by visibility if frame-only mode is enabled
+                    return isSplatVisibleAtCurrentTime(splat, i);
+                };
+
+                events.fire('edit.add', new SelectOp(splat, op, filter));
+            }
+        });
+    });
+
+    let maskTexture: Texture = null;
+
+    events.on('select.byMask', (op: 'add'|'remove'|'set', canvas: HTMLCanvasElement, context: CanvasRenderingContext2D) => {
+        const mode = events.invoke('camera.mode');
+
+        selectedSplats().forEach((splat) => {
+            if (mode === 'centers') {
+                // create mask texture
+                if (!maskTexture || maskTexture.width !== canvas.width || maskTexture.height !== canvas.height) {
+                    if (maskTexture) {
+                        maskTexture.destroy();
+                    }
+                    maskTexture = new Texture(scene.graphicsDevice);
+                }
+                maskTexture.setSource(canvas);
+
+                intersectCenters(splat, op, {
+                    mask: maskTexture
+                });
+            } else if (mode === 'rings') {
+                const mask = context.getImageData(0, 0, canvas.width, canvas.height);
+
+                // calculate mask bound so we limit pixel operations
+                let mx0 = mask.width - 1;
+                let my0 = mask.height - 1;
+                let mx1 = 0;
+                let my1 = 0;
+                for (let y = 0; y < mask.height; ++y) {
+                    for (let x = 0; x < mask.width; ++x) {
+                        if (mask.data[(y * mask.width + x) * 4 + 3] === 255) {
+                            mx0 = Math.min(mx0, x);
+                            my0 = Math.min(my0, y);
+                            mx1 = Math.max(mx1, x);
+                            my1 = Math.max(my1, y);
+                        }
+                    }
+                }
+
+                const { width, height } = scene.targetSize;
+                const px0 = Math.floor(mx0 / mask.width * width);
+                const py0 = Math.floor(my0 / mask.height * height);
+                const px1 = Math.floor(mx1 / mask.width * width);
+                const py1 = Math.floor(my1 / mask.height * height);
+                const pw = px1 - px0 + 1;
+                const ph = py1 - py0 + 1;
+
+                scene.camera.pickPrep(splat, op);
+                const pick = scene.camera.pickRect(px0, py0, pw, ph);
+
+                const selected = new Set<number>();
+                for (let y = 0; y < ph; ++y) {
+                    for (let x = 0; x < pw; ++x) {
+                        const mx = Math.floor((px0 + x) / width * mask.width);
+                        const my = Math.floor((py0 + y) / height * mask.height);
+                        if (mask.data[(my * mask.width + mx) * 4] === 255) {
+                            selected.add(pick[(ph - y) * pw + x]);
+                        }
+                    }
+                }
+
+                const filter = (i: number) => {
+                    if (!selected.has(i)) {
+                        return false;
+                    }
+                    // Filter by visibility if frame-only mode is enabled
+                    return isSplatVisibleAtCurrentTime(splat, i);
+                };
+
+                events.fire('edit.add', new SelectOp(splat, op, filter));
+            }
+        });
+    });
+
+    events.on('select.point', (op: 'add'|'remove'|'set', point: { x: number, y: number }) => {
+        const { width, height } = scene.targetSize;
+        const mode = events.invoke('camera.mode');
+
+        selectedSplats().forEach((splat) => {
+            const splatData = splat.splatData;
+
+            if (mode === 'centers') {
+                const splatSize = events.invoke('camera.splatSize');
+                const camera = scene.camera.entity.camera;
+                const sx = point.x * width;
+                const sy = point.y * height;
+
+                // calculate final matrix
+                mat.mul2(camera.camera._viewProjMat, splat.worldTransform);
+
+                // Get current time for dynamic gaussians
+                let currentTime: number | null = null;
+                if (splat.isDynamic && splat.dynManifest) {
+                    const currentFrame = (events.invoke('timeline.frame') ?? 0) as number;
+                    const totalFrames = Math.ceil(splat.dynManifest.duration * splat.dynManifest.fps);
+                    const frame = currentFrame % totalFrames;
+                    currentTime = splat.dynManifest.start + (frame / splat.dynManifest.fps);
+                }
+
+                // For dynamic gaussians, use updated centers from sorter (current frame positions)
+                // For static gaussians, use original positions
+                const sorter = splat.entity.gsplat.instance.sorter;
+                const centers = sorter.centers;
+                const x = splatData.getProp('x') as Float32Array;
+                const y = splatData.getProp('y') as Float32Array;
+                const z = splatData.getProp('z') as Float32Array;
+                
+                // Get motion data for dynamic gaussians (if needed)
+                let motion0: Float32Array | null = null;
+                let motion1: Float32Array | null = null;
+                let motion2: Float32Array | null = null;
+                let trbfCenter: Float32Array | null = null;
+                if (splat.isDynamic && currentTime !== null) {
+                    motion0 = splatData.getProp('motion_0') as Float32Array;
+                    motion1 = splatData.getProp('motion_1') as Float32Array;
+                    motion2 = splatData.getProp('motion_2') as Float32Array;
+                    trbfCenter = splatData.getProp('trbf_center') as Float32Array;
+                }
+
+                const filter = (i: number) => {
+                    let px, py, pz: number;
+                    
+                    // Use current frame position for dynamic gaussians
+                    if (splat.isDynamic && currentTime !== null && motion0 && motion1 && motion2 && trbfCenter) {
+                        // Calculate current frame position: p(t) = p0 + motion * (t - trbf_center)
+                        const dt = currentTime - trbfCenter[i];
+                        px = x[i] + motion0[i] * dt;
+                        py = y[i] + motion1[i] * dt;
+                        pz = z[i] + motion2[i] * dt;
+                    } else {
+                        // Use original position for static gaussians
+                        px = x[i];
+                        py = y[i];
+                        pz = z[i];
+                    }
+                    
+                    vec4.set(px, py, pz, 1.0);
+                    mat.transformVec4(vec4, vec4);
+                    const screenX = (vec4.x / vec4.w * 0.5 + 0.5) * width;
+                    const screenY = (-vec4.y / vec4.w * 0.5 + 0.5) * height;
+                    const inRect = Math.abs(screenX - sx) < splatSize && Math.abs(screenY - sy) < splatSize;
+                    if (!inRect) {
+                        return false;
+                    }
+                    // Filter by visibility if frame-only mode is enabled
+                    return isSplatVisibleAtCurrentTime(splat, i);
+                };
+
+                events.fire('edit.add', new SelectOp(splat, op, filter));
+            } else if (mode === 'rings') {
+                scene.camera.pickPrep(splat, op);
+
+                const pickId = scene.camera.pickRect(
+                    Math.floor(point.x * width),
+                    Math.floor(point.y * height),
+                    1, 1
+                )[0];
+
+                const filter = (i: number) => {
+                    if (i !== pickId) {
+                        return false;
+                    }
+                    // Filter by visibility if frame-only mode is enabled
+                    return isSplatVisibleAtCurrentTime(splat, i);
+                };
+
+                events.fire('edit.add', new SelectOp(splat, op, filter));
+            }
+        });
+    });
+
+    // Eyedropper selection with SelectOp so undo/redo and selection state updates remain consistent.
+    // Threshold acts as a per-channel absolute difference: 0 only matches identical colors while 1 matches everything.
+    // TO DO:
+    // -  alternative distance metrics such as HSV.
+    // -  alternative UI for threshold, two handles for min/max?
+    events.on('select.colorMatch', (op: 'add'|'remove'|'set', point: { x: number, y: number }, threshold = 0) => {
+        const splats = selectedSplats();
+        const targetSize = scene.targetSize;
+        if (!splats.length || !targetSize || !point) {
+            return;
+        }
+
+        const { width, height } = targetSize;
+        if (!width || !height) {
+            return;
+        }
+
+        const px = Math.max(0, Math.min(width - 1, Math.floor(point.x * width)));
+        const py = Math.max(0, Math.min(height - 1, Math.floor(point.y * height)));
+        const colorThreshold = Math.min(1, Math.max(0, Number.isFinite(threshold) ? threshold : 0));
+
+        splats.forEach((splat) => {
+            scene.camera.pickPrep(splat, 'set');
+            const pickBuffer = scene.camera.pickRect(px, py, 1, 1);
+            const pickId = pickBuffer?.[0];
+            if (pickId === undefined || pickId === -1) {
+                return;
+            }
+
+            const reds = splat.splatData.getProp('f_dc_0') as Float32Array;
+            const greens = splat.splatData.getProp('f_dc_1') as Float32Array;
+            const blues = splat.splatData.getProp('f_dc_2') as Float32Array;
+            // validate pickId and color channels exist
+            if (!reds || !greens || !blues || pickId < 0 || pickId >= reds.length) {
+                return;
+            }
+            // decode color channels for the reference pixel
+            const reference = [
+                decodeColorChannel(reds[pickId]),
+                decodeColorChannel(greens[pickId]),
+                decodeColorChannel(blues[pickId])
+            ];
+            // Check if a value is within the color threshold of the reference
+            const withinThreshold = (value: number, ref: number) => Math.abs(value - ref) <= colorThreshold;
+
+            // filter to select pixels within the color threshold
+            const filter = (i: number) => {
+                const colorMatch = withinThreshold(decodeColorChannel(reds[i]), reference[0]) &&
+                    withinThreshold(decodeColorChannel(greens[i]), reference[1]) &&
+                    withinThreshold(decodeColorChannel(blues[i]), reference[2]);
+                if (!colorMatch) {
+                    return false;
+                }
+                // Filter by visibility if frame-only mode is enabled
+                return isSplatVisibleAtCurrentTime(splat, i);
+            };
+
+            events.fire('edit.add', new SelectOp(splat, op, filter));
+        });
+    });
+
+    events.on('select.hide', () => {
+        selectedSplats().forEach((splat) => {
+            events.fire('edit.add', new HideSelectionOp(splat));
+        });
+    });
+
+    events.on('select.unhide', () => {
+        selectedSplats().forEach((splat) => {
+            events.fire('edit.add', new UnhideAllOp(splat));
+        });
+    });
+
+    events.on('select.delete', () => {
+        selectedSplats().forEach((splat) => {
+            editHistory.add(new DeleteSelectionOp(splat));
+        });
+    });
+
+    const performSelectionFunc = async (func: 'duplicate' | 'separate') => {
+        const splats = selectedSplats();
+
+        const writer = new BufferWriter();
+
+        await serializePly(splats, {
+            maxSHBands: 3,
+            selected: true
+        }, writer);
+
+        const buffers = writer.close();
+
+        if (buffers) {
+            const splat = splats[0];
+
+            // wrap PLY in a blob and load it
+            const blob = new Blob(buffers as unknown as ArrayBuffer[], { type: 'application/octet-stream' });
+            const url = URL.createObjectURL(blob);
+            const filename = `${removeExtension(splat.filename)}.ply`;
+            const copy = await scene.assetLoader.load({ url, filename });
+
+            if (func === 'separate') {
+                editHistory.add(new MultiOp([
+                    new DeleteSelectionOp(splat),
+                    new AddSplatOp(scene, copy)
+                ]));
+            } else {
+                editHistory.add(new AddSplatOp(scene, copy));
+            }
+
+            URL.revokeObjectURL(url);
+        }
+    };
+
+    // duplicate the current selection
+    events.on('select.duplicate', async () => {
+        await performSelectionFunc('duplicate');
+    });
+
+    events.on('select.separate', async () => {
+        await performSelectionFunc('separate');
+    });
+
+    events.on('scene.reset', () => {
+        selectedSplats().forEach((splat) => {
+            editHistory.add(new ResetOp(splat));
+        });
+    });
+
+    const setAllData = (value: boolean) => {
+        if (value !== scene.assetLoader.loadAllData) {
+            scene.assetLoader.loadAllData = value;
+            events.fire('allData', scene.assetLoader.loadAllData);
+        }
+    };
+
+    events.function('allData', () => {
+        return scene.assetLoader.loadAllData;
+    });
+
+    events.on('toggleAllData', (value: boolean) => {
+        setAllData(!events.invoke('allData'));
+    });
+
+    // camera mode
+
+    let activeMode = 'centers';
+
+    const setCameraMode = (mode: string) => {
+        if (mode !== activeMode) {
+            activeMode = mode;
+            events.fire('camera.mode', activeMode);
+        }
+    };
+
+    events.function('camera.mode', () => {
+        return activeMode;
+    });
+
+    events.on('camera.setMode', (mode: string) => {
+        setCameraMode(mode);
+    });
+
+    events.on('camera.toggleMode', () => {
+        setCameraMode(events.invoke('camera.mode') === 'centers' ? 'rings' : 'centers');
+    });
+
+    // camera overlay
+
+    let cameraOverlay = scene.config.camera.overlay;
+
+    const setCameraOverlay = (enabled: boolean) => {
+        if (enabled !== cameraOverlay) {
+            cameraOverlay = enabled;
+            events.fire('camera.overlay', cameraOverlay);
+        }
+    };
+
+    events.function('camera.overlay', () => {
+        return cameraOverlay;
+    });
+
+    events.on('camera.setOverlay', (value: boolean) => {
+        setCameraOverlay(value);
+    });
+
+    events.on('camera.toggleOverlay', () => {
+        setCameraOverlay(!events.invoke('camera.overlay'));
+    });
+
+    // splat size
+
+    let splatSize = 2;
+
+    const setSplatSize = (value: number) => {
+        if (value !== splatSize) {
+            splatSize = value;
+            events.fire('camera.splatSize', splatSize);
+        }
+    };
+
+    events.function('camera.splatSize', () => {
+        return splatSize;
+    });
+
+    events.on('camera.setSplatSize', (value: number) => {
+        setSplatSize(value);
+    });
+
+    // camera fly speed
+
+    const setFlySpeed = (value: number) => {
+        if (value !== scene.camera.flySpeed) {
+            scene.camera.flySpeed = value;
+            events.fire('camera.flySpeed', value);
+        }
+    };
+
+    events.function('camera.flySpeed', () => {
+        return scene.camera.flySpeed;
+    });
+
+    events.on('camera.setFlySpeed', (value: number) => {
+        setFlySpeed(value);
+    });
+
+    // outline selection
+
+    let outlineSelection = false;
+
+    const setOutlineSelection = (value: boolean) => {
+        if (value !== outlineSelection) {
+            outlineSelection = value;
+            events.fire('view.outlineSelection', outlineSelection);
+        }
+    };
+
+    events.function('view.outlineSelection', () => {
+        return outlineSelection;
+    });
+
+    events.on('view.setOutlineSelection', (value: boolean) => {
+        setOutlineSelection(value);
+    });
+
+    // view spherical harmonic bands
+
+    let viewBands = scene.config.show.shBands;
+
+    const setViewBands = (value: number) => {
+        if (value !== viewBands) {
+            viewBands = value;
+            events.fire('view.bands', viewBands);
+        }
+    };
+
+    events.function('view.bands', () => {
+        return viewBands;
+    });
+
+    events.on('view.setBands', (value: number) => {
+        setViewBands(value);
+    });
+
+    events.function('camera.getPose', () => {
+        const camera = scene.camera;
+        const position = camera.entity.getPosition();
+        const focalPoint = camera.focalPoint;
+        return {
+            position: { x: position.x, y: position.y, z: position.z },
+            target: { x: focalPoint.x, y: focalPoint.y, z: focalPoint.z }
+        };
+    });
+
+    events.on('camera.setPose', (pose: { position: Vec3, target: Vec3 }, speed = 1) => {
+        scene.camera.setPose(pose.position, pose.target, speed);
+    });
+
+    // hack: fire events to initialize UI
+    events.fire('camera.fov', scene.camera.fov);
+    events.fire('camera.overlay', cameraOverlay);
+    events.fire('view.bands', viewBands);
+
+    // doc serialization
+    events.function('docSerialize.view', () => {
+        const packC = (c: Color) => [c.r, c.g, c.b, c.a];
+        return {
+            bgColor: packC(events.invoke('bgClr')),
+            selectedColor: packC(events.invoke('selectedClr')),
+            unselectedColor: packC(events.invoke('unselectedClr')),
+            lockedColor: packC(events.invoke('lockedClr')),
+            shBands: events.invoke('view.bands'),
+            centersSize: events.invoke('camera.splatSize'),
+            outlineSelection: events.invoke('view.outlineSelection'),
+            showGrid: events.invoke('grid.visible'),
+            showBound: events.invoke('camera.bound'),
+            flySpeed: events.invoke('camera.flySpeed')
+        };
+    });
+
+    events.function('docDeserialize.view', (docView: any) => {
+        events.fire('setBgClr', new Color(docView.bgColor));
+        events.fire('setSelectedClr', new Color(docView.selectedColor));
+        events.fire('setUnselectedClr', new Color(docView.unselectedColor));
+        events.fire('setLockedClr', new Color(docView.lockedColor));
+        events.fire('view.setBands', docView.shBands);
+        events.fire('camera.setSplatSize', docView.centersSize);
+        events.fire('view.setOutlineSelection', docView.outlineSelection);
+        events.fire('grid.setVisible', docView.showGrid);
+        events.fire('camera.setBound', docView.showBound);
+        events.fire('camera.setFlySpeed', docView.flySpeed);
+    });
+};
+
+export { registerEditorEvents };
