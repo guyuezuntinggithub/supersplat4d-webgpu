@@ -59,7 +59,16 @@ const application = {
                         return contents.toString().replace('__BASE_HREF__', HREF);
                     }
                 },
+                {
+                    src: 'src/index.html',
+                    dest: '',
+                    destFilename: '404.html',
+                    transform: (contents, filename) => {
+                        return contents.toString().replace('__BASE_HREF__', HREF);
+                    }
+                },
                 { src: 'src/manifest.json' },
+                { src: 'serve.json' },
                 { src: 'node_modules/jszip/dist/jszip.js' },
                 { src: 'static/images', dest: 'static' },
                 { src: 'static/icons', dest: 'static' },
