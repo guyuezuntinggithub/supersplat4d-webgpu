@@ -288,18 +288,8 @@ const main = async () => {
                 url: decoded
             }]);
         }
-    } else {
-        // Auto-load demo data if no URL params
-        console.log('🎬 Auto-loading demo dynamic Gaussian Splat...');
-        try {
-            await events.invoke('import', [{
-                filename: 'ski_demo.sog4d',
-                url: './ski_demo.sog4d'
-            }]);
-        } catch (error) {
-            console.warn('⚠️ Failed to auto-load demo data:', error);
-        }
     }
+    // 无 URL 参数时不再自动加载演示文件，用户可通过界面或 ?load= 参数加载
 
 
     // handle OS-based file association in PWA mode
