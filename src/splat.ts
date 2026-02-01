@@ -142,38 +142,40 @@ class Splat extends Element {
 
         this.entity = new Entity('splatEntitiy');
         this.entity.setEulerAngles(orientation);
-        this.entity.addComponent('gsplat', { asset });
+        // 静态用 unified（sortGpu）；动态用 instance + setMapping 实现逐帧显示（unified 管线无法按帧过滤）
+        this.entity.addComponent('gsplat');
+        this.entity.gsplat.asset = asset;
+        this.entity.gsplat.unified = !this.isDynamic;
 
-        // Wait for instance to be created if needed
-        let instance = this.entity.gsplat.instance;
-        if (!instance) {
-            // If instance is not immediately available, it might be created asynchronously
-            // Check if gsplat component exists
+        const unified = this.entity.gsplat.unified;
+        const instance = this.entity.gsplat.instance;
+        if (!unified && !instance) {
             if (!this.entity.gsplat) {
                 throw new Error('Failed to create gsplat component. Asset may not be properly loaded.');
             }
-            // Try to access instance again after a brief delay
-            // In most cases, instance should be available immediately if asset is loaded
             throw new Error('Failed to create gsplat instance. Asset may not be properly loaded. Make sure the asset has been loaded before creating Splat.');
         }
 
-        // use custom render order distance calculation for splats
-        instance.meshInstance.calculateSortDistance = (meshInstance: MeshInstance, pos: Vec3, dir: Vec3) => {
-            const bound = this.localBound;
-            const mat = this.entity.getWorldTransform();
-            let maxDist;
-            for (let i = 0; i < 8; ++i) {
-                vec.x = bound.center.x + bound.halfExtents.x * (i & 1 ? 1 : -1);
-                vec.y = bound.center.y + bound.halfExtents.y * (i & 2 ? 1 : -1);
-                vec.z = bound.center.z + bound.halfExtents.z * (i & 4 ? 1 : -1);
-                mat.transformPoint(vec, vec);
-                const dist = vec.sub(pos).dot(dir);
-                if (i === 0 || dist > maxDist) {
-                    maxDist = dist;
+        // 动态用 instance 时：自定义排序距离，动态高斯始终画在最前
+        if (!unified && instance) {
+            instance.meshInstance.calculateSortDistance = (meshInstance: MeshInstance, pos: Vec3, dir: Vec3) => {
+                if (this.isDynamic) return -Infinity;
+                const bound = this.localBound;
+                const mat = this.entity.getWorldTransform();
+                let maxDist: number | undefined;
+                for (let i = 0; i < 8; ++i) {
+                    vec.x = bound.center.x + bound.halfExtents.x * (i & 1 ? 1 : -1);
+                    vec.y = bound.center.y + bound.halfExtents.y * (i & 2 ? 1 : -1);
+                    vec.z = bound.center.z + bound.halfExtents.z * (i & 4 ? 1 : -1);
+                    mat.transformPoint(vec, vec);
+                    const dist = vec.sub(pos).dot(dir);
+                    if (i === 0 || dist > (maxDist ?? -Infinity)) {
+                        maxDist = dist;
+                    }
                 }
-            }
-            return maxDist;
-        };
+                return maxDist ?? 0;
+            };
+        }
 
         // added per-splat state channel
         // bit 1: selected
@@ -258,8 +260,10 @@ class Splat extends Element {
         const blendState = new BlendState(true, BLENDEQUATION_ADD, BLENDMODE_ONE, BLENDMODE_ONE_MINUS_SRC_ALPHA);
 
         this.rebuildMaterial = (bands: number) => {
-            const { material } = instance;
-            // material.blendState = blendState;
+            const material = unified
+                ? (this.scene.app.scene.gsplat.material as import('playcanvas').ShaderMaterial)
+                : instance!.material;
+            const res = splatResource;
             const { glsl, wgsl } = material.shaderChunks;
             glsl.set('gsplatVS', vertexShader);
             glsl.set('gsplatPS', fragmentShader);
@@ -268,15 +272,13 @@ class Splat extends Element {
             wgsl.set('gsplatPS', fragmentShaderWGSL);
             wgsl.set('gsplatCenterVS', gsplatCenterWGSL);
 
-            material.setDefine('SH_BANDS', `${Math.min(bands, (instance.resource as GSplatResource).shBands)}`);
+            material.setDefine('SH_BANDS', `${Math.min(bands, res.shBands)}`);
             material.setParameter('splatState', this.stateTexture);
             material.setParameter('splatTransform', this.transformTexture);
             
-            // Set dynamic gaussian parameters
             if (this.isDynamic) {
                 material.setDefine('DYNAMIC_MODE', true);
                 material.setParameter('uIsDynamic', 1.0);
-                // Ensure currentTime is initialized
                 if (this.currentTime === 0 && this.dynManifest) {
                     this.currentTime = this.dynManifest.start;
                 }
@@ -296,25 +298,25 @@ class Splat extends Element {
         };
 
         this.selectionBoundStorage = new BoundingBox();
-        this.localBoundStorage = instance.resource.aabb;
-        // @ts-ignore
-        this.worldBoundStorage = instance.meshInstance._aabb;
+        this.localBoundStorage = unified ? splatResource.aabb : instance!.resource.aabb;
+        this.worldBoundStorage = unified ? new BoundingBox() : (instance!.meshInstance as any)._aabb;
+        if (!unified && instance) {
+            (instance.meshInstance as any)._updateAabb = false;
+        }
 
-        // @ts-ignore
-        instance.meshInstance._updateAabb = false;
-
-        // when sort changes, re-render the scene and mark sort complete
-        instance.sorter.on('updated', () => {
-            this.changedCounter++;
-            if (this.pendingSort) {
-                this.pendingSort = false;
-                if (this.isDynamic && this.lastSortedTime === this.lastSortedTime) {
-                    instance.material.setParameter('uCurrentTime', this.lastSortedTime);
+        if (!unified && instance) {
+            instance.sorter.on('updated', () => {
+                this.changedCounter++;
+                if (this.pendingSort) {
+                    this.pendingSort = false;
+                    if (this.isDynamic && this.lastSortedTime === this.lastSortedTime) {
+                        instance.material.setParameter('uCurrentTime', this.lastSortedTime);
+                    }
+                    this.scene.forceRender = true;
+                    this.scene.app.renderNextFrame = true;
                 }
-                this.scene.forceRender = true;
-                this.scene.app.renderNextFrame = true;
-            }
-        });
+            });
+        }
 
         // Cache dynamic data arrays for fast center updates
         if (this.isDynamic) {
@@ -348,13 +350,21 @@ class Splat extends Element {
 
     /**
      * Update sorter centers with dynamic positions: p(t) = p0 + motion * (t - trbf_center)
-     * Only updates active splats (performance optimization)
+     * Only updates active splats (performance optimization).
+     * In unified mode, numSplatsToHide is passed so we first move all splats off-screen, then
+     * only active indices get correct positions (unified pipeline has no setMapping).
      * Reference: supersplat_base's _updateCentersActive
      */
-    private updateCentersForTime(centers: Float32Array, indices: Uint32Array, t_abs: number): void {
+    private updateCentersForTime(centers: Float32Array, indices: Uint32Array, t_abs: number, numSplatsToHide?: number): void {
         if (!this._dyn_x0 || !this._dyn_y0 || !this._dyn_z0 || 
             !this._dyn_m0 || !this._dyn_m1 || !this._dyn_m2 || !this._dyn_tc) {
             return;
+        }
+
+        // 用较小值避免 shader 里产生 inf/NaN 导致整帧渲染失败
+        const OFF_SCREEN = 1e6;
+        if (numSplatsToHide != null && numSplatsToHide > 0) {
+            centers.fill(OFF_SCREEN, 0, numSplatsToHide * 3);
         }
         
         const x0 = this._dyn_x0;
@@ -407,6 +417,44 @@ class Splat extends Element {
             centers[o + 1] = y0[idx] + m1[idx] * dt;
             centers[o + 2] = z0[idx] + m2[idx] * dt;
         }
+    }
+
+    /**
+     * Unified 模式且为动态 splat 时：将 resource.centers 上传到 transformATexture。
+     * 仅当 this.isDynamic 时调用，避免误改静态资源的纹理。
+     */
+    private uploadCentersToTransformTexture(): void {
+        if (!this.isDynamic) return;
+        const resource = this.asset?.resource as (GSplatResource & { transformATexture?: Texture }) | undefined;
+        const tex = resource?.transformATexture;
+        if (!tex) return;
+        const centers = resource.centers;
+        if (!centers) return;
+        const data = tex.lock();
+        const dataF32 = new Float32Array(data.buffer);
+        const n = Math.min(centers.length / 3, Math.floor(dataF32.length / 4));
+        for (let i = 0; i < n; i++) {
+            dataF32[i * 4 + 0] = centers[i * 3 + 0];
+            dataF32[i * 4 + 1] = centers[i * 3 + 1];
+            dataF32[i * 4 + 2] = centers[i * 3 + 2];
+        }
+        tex.unlock();
+    }
+
+    /**
+     * Unified 动态：将「当前帧可见」写入 state 纹理（bit 8 = 不可见）。
+     * 不修改 splatData.state，仅在上传时按 activeIndices 叠加 State.frameInactive。
+     */
+    private updateStateTextureForFrameActive(activeIndices: Uint32Array | null): void {
+        if (!this.isDynamic || !this.entity.gsplat.unified) return;
+        const state = this.splatData.getProp('state') as Uint8Array;
+        const data = this.stateTexture.lock();
+        const n = Math.min(state.length, data.length);
+        const activeSet = activeIndices ? new Set(activeIndices) : new Set<number>();
+        for (let i = 0; i < n; i++) {
+            data[i] = state[i] | (activeSet.has(i) ? 0 : State.frameInactive);
+        }
+        this.stateTexture.unlock();
     }
 
     // Update motion and trbf textures from GSplatData
@@ -584,9 +632,17 @@ class Splat extends Element {
     updateState(changedState = State.selected) {
         const state = this.splatData.getProp('state') as Uint8Array;
 
-        // write state data to gpu texture
+        // write state data to gpu texture (unified 动态会在此后由 updateStateTextureForFrameActive 叠加 frameInactive)
         const data = this.stateTexture.lock();
-        data.set(state);
+        if (this.isDynamic && this.entity.gsplat.unified) {
+            const activeSet = this.activeIndices ? new Set(this.activeIndices) : new Set<number>();
+            const n = Math.min(state.length, data.length);
+            for (let i = 0; i < n; i++) {
+                data[i] = state[i] | (activeSet.has(i) ? 0 : State.frameInactive);
+            }
+        } else {
+            data.set(state);
+        }
         this.stateTexture.unlock();
 
         let numSelected = 0;
@@ -623,10 +679,9 @@ class Splat extends Element {
     updatePositions() {
         const data = this.scene.dataProcessor.calcPositions(this);
 
-        // update the splat centers which are used for render-time sorting
         const state = this.splatData.getProp('state') as Uint8Array;
-        const { sorter } = this.entity.gsplat.instance;
-        const { centers } = sorter;
+        const resource = this.asset.resource as GSplatResource;
+        const centers = this.entity.gsplat.unified ? resource.centers : this.entity.gsplat.instance!.sorter.centers;
         for (let i = 0; i < this.splatData.numSplats; ++i) {
             if (state[i] === State.selected) {
                 centers[i * 3 + 0] = data[i * 4];
@@ -646,9 +701,12 @@ class Splat extends Element {
 
         this.makeLocalBoundDirty();
 
-        let mapping;
+        if (this.entity.gsplat.unified) {
+            // United pipeline: sortGpu in manager handles sorting; no per-entity setMapping
+            return;
+        }
 
-        // create a sorter mapping to remove deleted splats
+        let mapping;
         if (this.numSplats !== state.length) {
             mapping = new Uint32Array(this.numSplats);
             let idx = 0;
@@ -659,8 +717,7 @@ class Splat extends Element {
             }
         }
 
-        // update sorting instance
-        this.entity.gsplat.instance.sorter.setMapping(mapping);
+        this.entity.gsplat.instance!.sorter.setMapping(mapping);
     }
 
     get worldTransform() {
@@ -687,10 +744,8 @@ class Splat extends Element {
             return false;
         }
 
-        // use centers data, which are updated when edits occur
-        const { sorter } = this.entity.gsplat.instance;
-        const { centers } = sorter;
-
+        const resource = this.asset.resource as GSplatResource;
+        const centers = this.entity.gsplat.unified ? resource.centers : this.entity.gsplat.instance!.sorter.centers;
         result.set(
             centers[splatId * 3 + 0],
             centers[splatId * 3 + 1],
@@ -734,32 +789,35 @@ class Splat extends Element {
             const initialSegmentIndex = this.findSegment(initialFrameTime);
             this.currentSegmentIndex = initialSegmentIndex;
             
-            // Load initial segment and update mapping
-            // Use an empty mapping initially to hide all splats until segment loads
-            this.entity.gsplat.instance.sorter.setMapping(new Uint32Array(0));
+            const resource = this.asset.resource as GSplatResource;
+            const unified = this.entity.gsplat.unified;
+            if (unified) {
+                this.updateStateTextureForFrameActive(null);
+            } else {
+                this.entity.gsplat.instance!.sorter.setMapping(new Uint32Array(0));
+            }
             
             this.loadSegment(initialSegmentIndex).then((indices) => {
-                // Only apply if this is still the current segment
                 if (this.currentSegmentIndex !== initialSegmentIndex) {
                     return;
                 }
                 
                 if (indices && indices.length > 0) {
-                    // Cache active indices
                     this.activeIndices = indices;
-                    
-                    // Update centers for initial frame
-                    const sorter = this.entity.gsplat.instance.sorter;
-                    this.updateCentersForTime(sorter.centers, indices, this.dynManifest!.start);
-                    
-                    // Mark as pending sort so that uCurrentTime is set when sorting completes
-                    this.pendingSort = true;
-                    this.lastSortedFrame = 0;
-                    this.lastSortedTime = this.dynManifest!.start;
-                    
-                    // Set mapping to trigger sort
-                    sorter.setMapping(indices);
-                    
+                    const centers = unified ? resource.centers : this.entity.gsplat.instance!.sorter.centers;
+                    const numSplatsToHide: number | undefined = undefined;
+                    this.updateCentersForTime(centers, indices, this.dynManifest!.start, numSplatsToHide);
+                    if (unified) {
+                        this.uploadCentersToTransformTexture();
+                        this.updateStateTextureForFrameActive(indices);
+                        this.lastSortedFrame = 0;
+                        this.lastSortedTime = this.dynManifest!.start;
+                    } else {
+                        this.pendingSort = true;
+                        this.lastSortedFrame = 0;
+                        this.lastSortedTime = this.dynManifest!.start;
+                        this.entity.gsplat.instance!.sorter.setMapping(indices);
+                    }
                     this.preloadNextSegment(initialSegmentIndex);
                 }
             });
@@ -808,27 +866,29 @@ class Splat extends Element {
         const needsUpdate = frame !== this.lastSortedFrame && !this.pendingSort;
         
         if (needsUpdate) {
-            // 4. 找到对应的 segment
             const segmentIdx = this.findSegment(t_abs);
             
-            // 5. 检查 segment 是否在缓存中
             if (this.segmentCache.has(segmentIdx)) {
                 const indices = new Uint32Array(this.segmentCache.get(segmentIdx)!);
                 this.activeIndices = indices;
                 this.currentSegmentIndex = segmentIdx;
                 
-                // 6. 更新 centers: p(t) = p0 + motion * (t - trbf_center)
-                const sorter = this.entity.gsplat.instance.sorter;
-                this.updateCentersForTime(sorter.centers, indices, t_abs);
-                
-                // 7. 触发排序 (shader uniform uCurrentTime will be set when sorting completes)
-                this.pendingSort = true;
-                this.lastSortedFrame = frame;
-                this.lastSortedTime = t_abs;
-                
-                sorter.setMapping(indices);
-                
-                // 预加载下一个 segment
+                const resource = this.asset.resource as GSplatResource;
+                const unified = this.entity.gsplat.unified;
+                const centers = unified ? resource.centers : this.entity.gsplat.instance!.sorter.centers;
+                const numSplatsToHide: number | undefined = undefined;
+                this.updateCentersForTime(centers, indices, t_abs, numSplatsToHide);
+                if (unified) {
+                    this.uploadCentersToTransformTexture();
+                    this.updateStateTextureForFrameActive(indices);
+                    this.lastSortedFrame = frame;
+                    this.lastSortedTime = t_abs;
+                } else {
+                    this.pendingSort = true;
+                    this.lastSortedFrame = frame;
+                    this.lastSortedTime = t_abs;
+                    this.entity.gsplat.instance!.sorter.setMapping(indices);
+                }
                 this.preloadNextSegment(segmentIdx);
                 
             } else if (!this.loadingSegments.has(segmentIdx)) {
@@ -849,7 +909,9 @@ class Splat extends Element {
         const selected = this.scene.camera.renderOverlays && events.invoke('selection') === this;
         const cameraMode = events.invoke('camera.mode');
         const cameraOverlay = events.invoke('camera.overlay');
-        const material = this.entity.gsplat.instance.material;
+        const material = this.entity.gsplat.unified
+            ? (this.scene.app.scene.gsplat.material as import('playcanvas').ShaderMaterial)
+            : this.entity.gsplat.instance!.material;
 
         // ========== VISUAL SETTINGS ==========
         // configure rings rendering

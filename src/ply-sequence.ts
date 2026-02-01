@@ -24,10 +24,13 @@ const registerPlySequenceEvents = (events: Events) => {
         events.fire('timeline.frames', sequenceFiles.length);
     };
 
-    // resolves on first render frame
     const firstRender = (splat: Splat) => {
         return new Promise<void>((resolve) => {
-            splat.entity.gsplat.instance.sorter.on('updated', (count) => {
+            if (splat.entity.gsplat.unified) {
+                resolve();
+                return;
+            }
+            splat.entity.gsplat.instance!.sorter.on('updated', () => {
                 resolve();
             });
         });

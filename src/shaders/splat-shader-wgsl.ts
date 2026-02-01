@@ -40,7 +40,7 @@ fn vertexMain(input: VertexInput) -> VertexOutputCustom {
     return output;
   }
 
-  let vertexState = u32(textureLoad(splatState, source.uv, 0).r * 255.0 + 0.5) & 7u;
+  let vertexState = u32(textureLoad(splatState, source.uv, 0).r * 255.0 + 0.5) & 15u;
 
   #if OUTLINE_PASS
     if (vertexState != 1u) {
@@ -87,6 +87,12 @@ fn vertexMain(input: VertexInput) -> VertexOutputCustom {
       output.position = discardVec;
       return output;
     }
+    #ifdef DYNAMIC_MODE
+    if (uIsDynamic && (vertexState & 8u) != 0u) {
+      output.position = discardVec;
+      return output;
+    }
+    #endif
   #endif
 
   let modelCenter = readCenter(&source);
@@ -210,6 +216,7 @@ const gsplatCenterWGSL = /* wgsl */ `
 var<uniform> matrix_model: mat4x4f;
 var<uniform> matrix_view: mat4x4f;
 var<uniform> matrix_projection: mat4x4f;
+var<uniform> camera_params: vec4f;              // 1/far, far, near, isOrtho (for engine gsplatCorner compatibility)
 var splatTransform: texture_2d<u32>;
 var transformPalette: texture_2d<f32>;
 var<uniform> uCurrentTime: f32;

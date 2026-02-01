@@ -75,7 +75,9 @@ const application = {
                 { src: 'static/lib', dest: 'static' },
                 { src: 'static/locales', dest: 'static' },
                 { src: 'static/env/VertebraeHDRI_v1_512.png', dest: 'static/env' },
-                { src: 'public/ski_demo.sog4d' }  // Copy demo model
+                { src: 'public/ski_demo.sog4d' },  // Copy demo model
+                { src: 'static/lib/twgsl', dest: 'static/lib' },
+                { src: 'node_modules/@webgpu/glslang/dist/web-devel', dest: 'static/glslang' }
             ]
         }),
         alias({

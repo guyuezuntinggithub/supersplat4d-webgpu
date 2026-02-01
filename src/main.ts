@@ -130,8 +130,8 @@ const main = async () => {
         stencil: false,
         xrCompatible: false,
         powerPreference: 'high-performance',
-        glslangUrl: 'https://unpkg.com/@webgpu/glslang@0.0.15/dist/web-devel/glslang.js',
-        twgslUrl: 'https://unpkg.com/twgsl@0.0.10/dist/twgsl.js'
+        glslangUrl: '/static/glslang/web-devel/glslang.js',
+        twgslUrl: '/static/lib/twgsl/twgsl.js'
     });
 
     const overrides = [

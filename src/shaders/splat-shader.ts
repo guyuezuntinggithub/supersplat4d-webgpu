@@ -34,8 +34,8 @@ void main(void) {
         return;
     }
 
-    // get per-gaussian edit state, discard if deleted
-    uint vertexState = uint(texelFetch(splatState, source.uv, 0).r * 255.0 + 0.5) & 7u;
+    // get per-gaussian edit state (bits 0–2: selected/locked/deleted; bit 3: frameInactive for unified dynamic)
+    uint vertexState = uint(texelFetch(splatState, source.uv, 0).r * 255.0 + 0.5) & 15u;
 
     #if OUTLINE_PASS
         if (vertexState != 1u) {
@@ -98,6 +98,13 @@ void main(void) {
             gl_Position = discardVec;
             return;
         }
+        // Unified 动态：当前帧不显示的 splat（state 纹理 bit 8）
+        #ifdef DYNAMIC_MODE
+        if (uIsDynamic && (vertexState & 8u) != 0u) {
+            gl_Position = discardVec;
+            return;
+        }
+        #endif
     #endif
 
     // get center
@@ -242,6 +249,7 @@ const gsplatCenter = /* glsl*/`
 uniform mat4 matrix_model;
 uniform mat4 matrix_view;
 uniform mat4 matrix_projection;
+uniform vec4 camera_params;                      // 1/far, far, near, isOrtho (for engine gsplatCorner compatibility)
 
 uniform highp usampler2D splatTransform;        // per-splat index into transform palette
 uniform sampler2D transformPalette;             // palette of transform matrices

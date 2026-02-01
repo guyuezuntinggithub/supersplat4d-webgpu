@@ -82,7 +82,8 @@ class SplatOverlay extends Element {
             };
 
             material.setParameter('splatState', splat.stateTexture);
-            material.setParameter('splatPosition', (splat.entity.gsplat.instance.resource as GSplatResource).transformATexture);
+            const resource = splat.entity.gsplat.unified ? (splat.asset.resource as GSplatResource) : (splat.entity.gsplat.instance!.resource as GSplatResource);
+            material.setParameter('splatPosition', resource.transformATexture);
             material.setParameter('splatTransform', splat.transformTexture);
             material.setParameter('texParams', [splat.stateTexture.width, splat.stateTexture.height]);
             material.update();

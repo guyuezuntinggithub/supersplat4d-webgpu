@@ -2,12 +2,12 @@ import { html as indexHtml, css as indexCss, js as indexJs } from '@playcanvas/s
 import {
     Color,
     GSplatData,
+    GSplatResource,
     Mat3,
     Mat4,
     Quat,
     Vec3
 } from 'playcanvas';
-
 import { SHRotation } from './sh-utils';
 import { Splat } from './splat';
 import { State } from './splat-state';
@@ -764,7 +764,8 @@ const sortSplats = (splats: Splat[], indices: CompressedIndex[]) => {
         const splat = splats[i];
         const splatData = splat.splatData;
         const state = splatData.getProp('state') as Uint8Array;
-        const { centers } = splat.entity.gsplat.instance.sorter;
+        const resource = splat.asset.resource as GSplatResource;
+        const centers = splat.entity.gsplat.unified ? resource.centers : splat.entity.gsplat.instance!.sorter.centers;
 
         for (let i = 0; i < splatData.numSplats; ++i) {
             if ((state[i] & State.deleted) === 0) {
@@ -795,7 +796,8 @@ const sortSplats = (splats: Splat[], indices: CompressedIndex[]) => {
         const splat = splats[i];
         const splatData = splat.splatData;
         const state = splatData.getProp('state') as Uint8Array;
-        const { centers } = splat.entity.gsplat.instance.sorter;
+        const resource = splat.asset.resource as GSplatResource;
+        const centers = splat.entity.gsplat.unified ? resource.centers : splat.entity.gsplat.instance!.sorter.centers;
 
         for (let i = 0; i < splatData.numSplats; ++i) {
             if ((state[i] & State.deleted) === 0) {

@@ -1,4 +1,4 @@
-import { Color, Mat4, path, Texture, Vec3, Vec4 } from 'playcanvas';
+import { Color, GSplatResource, Mat4, path, Texture, Vec3, Vec4 } from 'playcanvas';
 
 import { EditHistory } from './edit-history';
 import { SelectAllOp, SelectNoneOp, SelectInvertOp, SelectOp, HideSelectionOp, UnhideAllOp, DeleteSelectionOp, ResetOp, MultiOp, AddSplatOp } from './edit-ops';
@@ -488,10 +488,9 @@ const registerEditorEvents = (events: Events, editHistory: EditHistory, scene: S
                     currentTime = splat.dynManifest.start + (frame / splat.dynManifest.fps);
                 }
 
-                // For dynamic gaussians, use updated centers from sorter (current frame positions)
-                // For static gaussians, use original positions
-                const sorter = splat.entity.gsplat.instance.sorter;
-                const centers = sorter.centers;
+                // For dynamic gaussians, use updated centers (sorter or resource.centers in United)
+                const resource = splat.asset.resource as GSplatResource;
+                const centers = splat.entity.gsplat.unified ? resource.centers : splat.entity.gsplat.instance!.sorter.centers;
                 const x = splatData.getProp('x') as Float32Array;
                 const y = splatData.getProp('y') as Float32Array;
                 const z = splatData.getProp('z') as Float32Array;

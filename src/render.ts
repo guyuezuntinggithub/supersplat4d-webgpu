@@ -301,28 +301,20 @@ const registerRenderEvents = (scene: Scene, events: Events) => {
                 last_pos.copy(pos);
                 last_forward.copy(forward);
 
-                // wait for sorting to complete
+                // wait for sorting to complete (United pipeline uses manager sortGpu, no per-entity sorter)
                 await Promise.all(splats.map((splat) => {
-                    // create a promise for each splat that will resolve upon sorting complete
                     return new Promise<void>((resolve) => {
+                        if (splat.entity.gsplat.unified) {
+                            resolve();
+                            return;
+                        }
                         const { instance } = splat.entity.gsplat;
-
-                        // listen for the sorter to complete
                         const handle = instance.sorter.on('updated', () => {
                             handle.off();
                             resolve();
                         });
-
-                        // manually invoke sort because internally the engine sorts after render the
-                        // scene call is made.
                         instance.sort(scene.camera.entity);
-
-                        // in cases where the camera does not move between frames the sorter won't run
-                        // and we need a timeout instead. this is a hack - the engine should allow us to
-                        // know whether the sorter is running or not.
-                        setTimeout(() => {
-                            resolve();
-                        }, 1000);
+                        setTimeout(() => resolve(), 1000);
                     });
                 }));
             };

@@ -274,7 +274,8 @@ class DataProcessor {
         const { scope } = device;
 
         const numSplats = splat.splatData.numSplats;
-        const transformA = (splat.entity.gsplat.instance.resource as GSplatResource).transformATexture;
+        const resource = splat.entity.gsplat.unified ? (splat.asset.resource as GSplatResource) : (splat.entity.gsplat.instance!.resource as GSplatResource);
+        const transformA = resource.transformATexture;
         const splatTransform = splat.transformTexture;
         const transformPalette = splat.transformPalette.texture;
 
@@ -387,7 +388,8 @@ class DataProcessor {
         const { scope } = device;
 
         const numSplats = splat.splatData.numSplats;
-        const transformA = (splat.entity.gsplat.instance.resource as GSplatResource).transformATexture;
+        const resource = splat.entity.gsplat.unified ? (splat.asset.resource as GSplatResource) : (splat.entity.gsplat.instance!.resource as GSplatResource);
+        const transformA = resource.transformATexture;
         const splatTransform = splat.transformTexture;
         const transformPalette = splat.transformPalette.texture;
         const splatState = splat.stateTexture;
@@ -456,7 +458,8 @@ class DataProcessor {
         const { scope } = device;
 
         const numSplats = splat.splatData.numSplats;
-        const transformA = (splat.entity.gsplat.instance.resource as GSplatResource).transformATexture;
+        const resource = splat.entity.gsplat.unified ? (splat.asset.resource as GSplatResource) : (splat.entity.gsplat.instance!.resource as GSplatResource);
+        const transformA = resource.transformATexture;
         const splatTransform = splat.transformTexture;
         const transformPalette = splat.transformPalette.texture;
 

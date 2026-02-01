@@ -75,6 +75,11 @@ class Scene {
         // only the simplest of backbuffers.
         this.app = new PCApp(canvas, { graphicsDevice });
 
+        // Enable United pipeline GPU sorting (WebGPU only, uses sortGpu in gsplat-manager)
+        if (this.app.graphicsDevice.isWebGPU) {
+            this.app.scene.gsplat.gpuSorting = true;
+        }
+
         // only render the scene when instructed
         this.app.autoRender = false;
         // @ts-ignore
