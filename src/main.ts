@@ -274,7 +274,7 @@ const main = async () => {
     // handle load params
     const loadList = url.searchParams.getAll('load');
     const filenameList = url.searchParams.getAll('filename');
-    
+
     if (loadList.length > 0) {
         // Load from URL params
         for (const [i, value] of loadList.entries()) {
@@ -288,8 +288,13 @@ const main = async () => {
                 url: decoded
             }]);
         }
+    } else {
+        // 无 URL 参数时默认加载 public 下的演示文件（构建后位于 dist 根目录）
+        await events.invoke('import', [{
+            filename: 'ski_demo.sog4d',
+            url: './ski_demo.sog4d'
+        }]);
     }
-    // 无 URL 参数时不再自动加载演示文件，用户可通过界面或 ?load= 参数加载
 
 
     // handle OS-based file association in PWA mode
