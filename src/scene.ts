@@ -8,6 +8,7 @@ import {
     Color,
     Entity,
     Layer,
+    MiniStats,
     GraphicsDevice
 } from 'playcanvas';
 
@@ -53,6 +54,7 @@ class Scene {
     dataProcessor: DataProcessor;
     assetLoader: AssetLoader;
     camera: Camera;
+    miniStats: MiniStats | null = null;
     splatOverlay: SplatOverlay;
     grid: Grid;
     outline: Outline;
@@ -132,6 +134,19 @@ class Scene {
         this.app.on('update', (deltaTime: number) => this.onUpdate(deltaTime));
         this.app.on('prerender', () => this.onPreRender());
         this.app.on('postrender', () => this.onPostRender());
+
+        // 性能统计叠加层（DrawCalls / Frame / GPU / CPU）
+        //this.miniStats = new MiniStats(this.app);
+        const miniStatsOptions = MiniStats.getDefaultOptions() as any;
+        miniStatsOptions.startSizeIndex = 1;
+        // 增加第四档：更宽更高，方便看所有 GPU/CPU 子项
+        miniStatsOptions.sizes = [
+            { width: 100, height: 16, spacing: 0, graphs: false },
+            { width: 128, height: 32, spacing: 2, graphs: true },
+            { width: 256, height: 64, spacing: 2, graphs: true },
+            { width: 320, height: 96, spacing: 2, graphs: true }
+        ];
+        this.miniStats = new MiniStats(this.app, miniStatsOptions);
 
         // force render on device restored
         this.app.graphicsDevice.on('devicerestored', () => {
