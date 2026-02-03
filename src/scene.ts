@@ -138,7 +138,7 @@ class Scene {
         // 性能统计叠加层（DrawCalls / Frame / GPU / CPU）
         //this.miniStats = new MiniStats(this.app);
         const miniStatsOptions = MiniStats.getDefaultOptions() as any;
-        miniStatsOptions.startSizeIndex = 2;
+        miniStatsOptions.startSizeIndex = 1;
         // 增加第四档：更宽更高，方便看所有 GPU/CPU 子项
         miniStatsOptions.sizes = [
             { width: 100, height: 16, spacing: 0, graphs: false },
