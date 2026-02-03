@@ -167,21 +167,21 @@ class Scene {
             },
 
             // total number of triangles, in 1000s
-            {
-                name: 'triCount',
-                stats: ['frame.triangles'],
-                decimalPlaces: 1,
-                multiplier: 1 / 1000,
-                unitsName: 'k',
-                watermark: 500
-            },
+            // {
+            //     name: 'triCount',
+            //     stats: ['frame.triangles'],
+            //     decimalPlaces: 1,
+            //     multiplier: 1 / 1000,
+            //     unitsName: 'k',
+            //     watermark: 500
+            // },
 
-            // number of materials used in a frame
-            {
-                name: 'materials',
-                stats: ['frame.materials'],
-                watermark: 2000
-            },
+            // // number of materials used in a frame
+            // {
+            //     name: 'materials',
+            //     stats: ['frame.materials'],
+            //     watermark: 2000
+            // },
 
             // frame time it took to do frustum culling
             {
