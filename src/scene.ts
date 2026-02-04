@@ -219,6 +219,15 @@ class Scene {
             }
         ];
 
+        miniStatsOptions.stats.push({
+            name: 'GSplats',
+            stats: ['frame.gsplats'],
+            decimalPlaces: 3,
+            multiplier: 1 / 1000000,
+            unitsName: 'M',
+            watermark: 10
+        });
+
 
 
         this.miniStats = new MiniStats(this.app, miniStatsOptions);
