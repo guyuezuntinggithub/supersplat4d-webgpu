@@ -223,8 +223,8 @@ class Scene {
             name: 'GSplats',
             stats: ['frame.gsplats'],
             decimalPlaces: 3,
-            multiplier: 1 / 1000000,
-            unitsName: 'M',
+            multiplier: 1 / 1000,
+            unitsName: 'K',
             watermark: 10
         });
 
